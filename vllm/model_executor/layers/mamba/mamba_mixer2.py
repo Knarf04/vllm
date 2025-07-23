@@ -30,6 +30,9 @@ from vllm.model_executor.utils import set_weight_attrs
 
 # Added by the IBM Team, 2024
 
+import os
+from vllm.analysis.upi import scale_dt, dynamic_scale_mask
+
 
 # Adapted from transformers.models.mamba2.modeling_mamba2.MambaRMSNormGated
 @CustomOp.register("mixer2_gated_rms_norm")
@@ -241,6 +244,7 @@ class MambaMixer2(CustomOp):
         activation: str = "silu",
         use_rms_norm: bool = True,
         quant_config: Optional[QuantizationConfig] = None,
+        experiments: dict = {},
     ):
         super().__init__()
 
@@ -410,6 +414,27 @@ class MambaMixer2(CustomOp):
                                        n_groups,
                                        self.use_rms_norm,
                                        eps=rms_norm_eps)
+        
+        self.experiments = experiments
+
+        self.register_buffer('upi_mask', torch.ones(self.num_heads), persistent=True)
+        if "upi" in self.experiments.keys():
+            mask_file = self.experiments["upi"]
+            if os.path.isfile(mask_file):
+                mask = torch.load(mask_file)[self.layer_idx]
+                self.upi_mask.copy_(mask) # (nheads,)
+            self.upi_dynamic = False # TODO: enable dynamic handling in config
+        
+        self.seq_len = 0
+        if "seq_len_scaled" in self.experiments.keys():
+            self.seq_len_scaled = self.experiments["seq_len_scaled"]
+        else:
+            self.seq_len_scaled = 32768
+        
+        if "seq_len_trained" in self.experiments.keys():
+            self.seq_len_trained = self.experiments["seq_len_trained"]
+        else:
+            self.seq_len_trained = 4096
 
     def forward_native(
         self,
@@ -523,11 +548,26 @@ class MambaMixer2(CustomOp):
                     mamba2_metadata.has_initial_states[:, None, None, None],
                     mamba_cache_params.ssm_state[state_indices_tensor_p], 0)
 
+            # Apply scaling here
+            dt_bias = self.dt_bias
+            dt_softplus = True
+            dt_p = dt_p.unsqueeze(0)
+            if "upi" in self.experiments.keys():
+                # Precompute scaled delta and disable later ones
+                if self.upi_dynamic:
+                    upi_mask = dynamic_scale_mask(self.upi_mask, self.seq_len, self.seq_len_scaled, self.seq_len_trained)
+                else:
+                    upi_mask = self.upi_mask                    
+                # print(f"[DEBUG] mamba_chunk_scan_combined, seq_len = {self.seq_len}")
+                dt_p = nn.functional.softplus(dt_p + self.dt_bias) / upi_mask
+                dt_bias = None
+                dt_softplus = False
+
             scan_output, varlen_state = mamba_chunk_scan_combined(
                 hidden_states_p.view(1, num_prefill_tokens,
                                      self.num_heads // self.tp_size,
                                      self.head_dim),
-                dt_p.unsqueeze(0),
+                dt_p,
                 self.A,
                 B_p.view(1, num_prefill_tokens, self.n_groups // self.tp_size,
                          -1),
@@ -536,7 +576,7 @@ class MambaMixer2(CustomOp):
                 chunk_size=mamba2_metadata.chunk_size,
                 D=self.D,
                 z=None,
-                dt_bias=self.dt_bias,
+                dt_bias=dt_bias,
                 seq_idx=mamba2_metadata.seq_idx,
                 chunk_indices=mamba2_metadata.chunk_indices,
                 chunk_offsets=mamba2_metadata.chunk_offsets,
@@ -544,7 +584,7 @@ class MambaMixer2(CustomOp):
                 initial_states=initial_states,
                 return_varlen_states=True,
                 return_final_states=False,
-                dt_softplus=True,
+                dt_softplus=dt_softplus,
                 dt_limit=(0.0, float("inf")),
             )
 
@@ -575,6 +615,18 @@ class MambaMixer2(CustomOp):
                 -1, self.head_dim, self.ssm_state_size).to(dtype=torch.float32)
             dt_d = dt_d[:, :, None].expand(-1, -1, self.head_dim)
             dt_bias = self.dt_bias[:, None, ...].expand(-1, self.head_dim)
+            
+            dt_softplus = True
+            if "upi" in self.experiments.keys():
+                # Precompute scaled delta and disable later ones
+                if self.upi_dynamic:
+                    upi_mask = dynamic_scale_mask(self.upi_mask, self.seq_len, self.seq_len_scaled, self.seq_len_trained)
+                else:
+                    upi_mask = self.upi_mask
+                dt_d = nn.functional.softplus(dt_d + dt_bias) / upi_mask[:, None]
+                dt_bias = None
+                dt_softplus = False
+            
             D_d = self.D[:, None, ...].expand(-1, self.head_dim)
             B_d = B_d.view(-1, n_groups, B_d.shape[1] // n_groups)
             C_d = C_d.view(-1, n_groups, C_d.shape[1] // n_groups)
@@ -595,7 +647,7 @@ class MambaMixer2(CustomOp):
                 D_d,
                 z=None,
                 dt_bias=dt_bias,
-                dt_softplus=True,
+                dt_softplus=dt_softplus,
                 state_batch_indices=state_indices_tensor_d,
             )
             ssd_output_list.append(
