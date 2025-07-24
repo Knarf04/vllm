@@ -519,6 +519,9 @@ class BambaForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP,
             if ".self_attn." in name:
                 name = name.replace(".self_attn", "")
 
+            if ".upi_mask" in name:
+                continue
+
             for param_name, weight_name, shard_id in stacked_params_mapping:
                 if weight_name not in name:
                     continue
