@@ -417,13 +417,18 @@ class MambaMixer2(CustomOp):
         
         self.experiments = experiments
 
-        self.register_buffer('upi_mask', torch.ones(self.num_heads), persistent=True)
-        if "upi" in self.experiments.keys():
-            mask_file = self.experiments["upi"]
-            if os.path.isfile(mask_file):
-                mask = torch.load(mask_file)[self.layer_idx]
-                self.upi_mask.copy_(mask) # (nheads,)
-            self.upi_dynamic = False # TODO: enable dynamic handling in config
+        # self.register_buffer('upi_mask', torch.ones(self.num_heads), persistent=True)
+        # @Haochen: this could be unsafe, but considering vllm is generally used for inference only
+        # we just use nn.Parameter instead
+        self.upi_mask = nn.Parameter(torch.ones(num_heads // self.tp_size))
+        set_weight_attrs(self.upi_mask, {"weight_loader": sharded_weight_loader(0)})
+        # Loading from file disabled since the mask is also sharded
+        # if "upi" in self.experiments.keys():
+        #     mask_file = self.experiments["upi"]
+        #     if os.path.isfile(mask_file):
+        #         mask = torch.load(mask_file)[self.layer_idx]
+        #         self.upi_mask.copy_(mask) # (nheads,)
+        #     self.upi_dynamic = False # TODO: enable dynamic handling in config
         
         self.seq_len = 0
         if "seq_len_scaled" in self.experiments.keys():
