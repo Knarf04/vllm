@@ -428,7 +428,7 @@ class MambaMixer2(CustomOp):
         #     if os.path.isfile(mask_file):
         #         mask = torch.load(mask_file)[self.layer_idx]
         #         self.upi_mask.copy_(mask) # (nheads,)
-        #     self.upi_dynamic = False # TODO: enable dynamic handling in config
+        self.upi_dynamic = False # TODO: enable dynamic handling in config
         
         self.seq_len = 0
         if "seq_len_scaled" in self.experiments.keys():
