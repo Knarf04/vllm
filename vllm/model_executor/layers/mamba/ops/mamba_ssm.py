@@ -277,9 +277,6 @@ def selective_state_update(state,
     tie_hdim = A.stride(-1) == 0 and A.stride(-2) == 0 and dt.stride(
         -1) == 0 and dt_bias.stride(-1) == 0
     with torch.cuda.device(x.device.index):
-        print(*(dt_bias.stride(0),
-              dt_bias.stride(1)) if dt_bias is not None else 0)
-        print(*(D.stride(0), D.stride(1)) if D is not None else 0)
         _selective_scan_update_kernel[grid](
             state,
             x,
@@ -308,8 +305,7 @@ def selective_state_update(state,
             dt.stride(0),
             dt.stride(1),
             dt.stride(2),
-            *(dt_bias.stride(0),
-              dt_bias.stride(1)) if dt_bias is not None else 0,
+            *(dt_bias.stride(0), dt_bias.stride(1)) if dt_bias is not None else (0, 0),
             A.stride(0),
             A.stride(1),
             A.stride(2),
@@ -319,7 +315,7 @@ def selective_state_update(state,
             C.stride(0),
             C.stride(1),
             C.stride(2),
-            *(D.stride(0), D.stride(1)) if D is not None else 0,
+            *(D.stride(0), D.stride(1)) if D is not None else (0, 0),
             z_strides[0],
             z_strides[1],
             z_strides[2],
