@@ -97,7 +97,7 @@ class BambaMixerDecoderLayer(nn.Module):
                                 rms_norm_eps=config.rms_norm_eps,
                                 activation=config.hidden_act,
                                 quant_config=quant_config,
-                                experiments=config.experiments)
+                                experiments=getattr(config, "experiments", {}))
 
         self.feed_forward = BambaMLP(config, quant_config=quant_config)
         self.input_layernorm = RMSNorm(config.hidden_size,
