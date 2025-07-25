@@ -546,5 +546,12 @@ class BambaForCausalLM(nn.Module, HasInnerState, SupportsLoRA, SupportsPP,
                                         default_weight_loader)
                 weight_loader(param, loaded_weight)
             loaded_params.add(name)
+        
+        # If upi_mask is not in the checkpoint, use the dafault values instead
+        if 'model.layers.0.mamba.upi_mask' not in loaded_params:
+            for i in range(self.config.num_hidden_layers):
+                if i not in self.config.attn_layer_indices:
+                    loaded_params.add(f'model.layers.{i}.mamba.upi_mask')
+
         return loaded_params
         
