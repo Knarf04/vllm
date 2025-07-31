@@ -880,8 +880,6 @@ class Zamba2ForCausalLM(nn.Module, HasInnerState, IsHybrid):
         self.logits_processor = LogitsProcessor(self.unpadded_vocab_size,
                                                 config.vocab_size)
         
-        print(self)
-
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Convert input token IDs to embeddings.
         Args:
@@ -908,6 +906,7 @@ class Zamba2ForCausalLM(nn.Module, HasInnerState, IsHybrid):
             Output hidden states
         """
         # Initialize Mamba cache if needed
+        print(self)
         if self.mamba_cache is None:
             num_mamba_layers = self.config.num_hidden_layers
             self.mamba_cache = MambaCacheManager(
