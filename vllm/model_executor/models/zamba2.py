@@ -879,6 +879,8 @@ class Zamba2ForCausalLM(nn.Module, HasInnerState, IsHybrid):
         # Initialize logits processing and sampling
         self.logits_processor = LogitsProcessor(self.unpadded_vocab_size,
                                                 config.vocab_size)
+        
+        print(self)
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Convert input token IDs to embeddings.
