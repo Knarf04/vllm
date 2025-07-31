@@ -69,7 +69,7 @@ class NemotronHMLP(nn.Module):
         super().__init__()
         self.up_proj = ColumnParallelLinear(
             input_size=config.hidden_size,
-            output_sizes=config.intermediate_size,
+            output_size=config.intermediate_size,
             bias=bias,
             quant_config=quant_config,
             prefix=f"{prefix}.up_proj",
