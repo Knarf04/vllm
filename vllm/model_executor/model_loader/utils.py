@@ -106,8 +106,6 @@ def get_model_architecture(
         architectures = resolve_transformers_fallback(model_config,
                                                       architectures)
 
-    print(f"[DEBUG] The current architectures are {architectures}")
-    print(f"[DEBUG] The current task type is {model_config.task}")
     model_cls, arch = ModelRegistry.resolve_model_cls(architectures)
     if model_config.task == "embed":
         model_cls = as_embedding_model(model_cls)
