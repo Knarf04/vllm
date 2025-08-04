@@ -439,6 +439,7 @@ class _ModelRegistry:
         architectures: Union[str, List[str]],
     ) -> bool:
         model_cls, _ = self.inspect_model_cls(architectures)
+        print(f"[DEBUG] model_cls = {model_cls}")
         return model_cls.is_text_generation_model
 
     def is_pooling_model(
