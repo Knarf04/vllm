@@ -807,10 +807,8 @@ class Zamba2Model(nn.Module):
         for layer_idx, layer_type in enumerate(self.config.layers_block_type):
             if layer_type == "hybrid":
                 loaded_params.add(f'model.layers.{layer_idx}.mamba_decoder.mamba.upi_mask')
-                print(f"Loaded model.layers.{layer_idx}.mamba_decoder.mamba.upi_mask")
             else:
                 loaded_params.add(f'model.layers.{layer_idx}.mamba.upi_mask')
-                print(f"Loaded model.layers.{layer_idx}.mamba.upi_mask")
 
         return loaded_params
 
@@ -1034,9 +1032,7 @@ class Zamba2ForCausalLM(nn.Module, HasInnerState, IsHybrid):
         for layer_idx, layer_type in enumerate(self.config.layers_block_type):
             if layer_type == "hybrid":
                 loaded_params.add(f'model.layers.{layer_idx}.mamba_decoder.mamba.upi_mask')
-                print(f"Loaded model.layers.{layer_idx}.mamba_decoder.mamba.upi_mask")
             else:
                 loaded_params.add(f'model.layers.{layer_idx}.mamba.upi_mask')
-                print(f"Loaded model.layers.{layer_idx}.mamba.upi_mask")
         
         return loaded_params
