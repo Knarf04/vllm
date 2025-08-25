@@ -423,23 +423,18 @@ class MambaMixer2(CustomOp):
         self.upi_mask = nn.Parameter(torch.ones(num_heads // self.tp_size))
         set_weight_attrs(self.upi_mask, {"weight_loader": sharded_weight_loader(0)})
         # Loading from file disabled since the mask is also sharded
-        # if "upi" in self.experiments.keys():
+        # if "upi" in self.experiments:
         #     mask_file = self.experiments["upi"]
         #     if os.path.isfile(mask_file):
         #         mask = torch.load(mask_file)[self.layer_idx]
         #         self.upi_mask.copy_(mask) # (nheads,)
         self.upi_dynamic = False # TODO: enable dynamic handling in config
-        
         self.seq_len = 0
-        if "seq_len_scaled" in self.experiments.keys():
-            self.seq_len_scaled = self.experiments["seq_len_scaled"]
-        else:
-            self.seq_len_scaled = 32768
-        
-        if "seq_len_trained" in self.experiments.keys():
-            self.seq_len_trained = self.experiments["seq_len_trained"]
-        else:
-            self.seq_len_trained = 4096
+
+        self.seq_len_scaled = self.experiments.get("seq_len_scaled", 32768)
+        self.seq_len_trained = self.experiments.get("seq_len_trained", 4096)
+        self.proper_upi = self.experiments.get("proper_upi", False)
+        self.upi_interpolation_scale = self.seq_len_trained / self.seq_len_scaled
 
     def forward_native(
         self,
@@ -554,26 +549,38 @@ class MambaMixer2(CustomOp):
                     mamba_cache_params.ssm_state[state_indices_tensor_p], 0)
 
             # Apply scaling here
+            A = self.A
+            hidden_states_p = hidden_states_p.view(1, num_prefill_tokens, self.num_heads // self.tp_size, self.head_dim)
+            dt_p = dt_p.unsqueeze(0)
             dt_bias = self.dt_bias
             dt_softplus = True
-            dt_p = dt_p.unsqueeze(0)
-            if "upi" in self.experiments.keys():
-                # Precompute scaled delta and disable later ones
-                if self.upi_dynamic:
-                    upi_mask = dynamic_scale_mask(self.upi_mask, self.seq_len, self.seq_len_scaled, self.seq_len_trained)
-                else:
-                    upi_mask = self.upi_mask                    
-                # print(f"[DEBUG] mamba_chunk_scan_combined, seq_len = {self.seq_len}")
-                dt_p = nn.functional.softplus(dt_p + self.dt_bias) / upi_mask
+
+            if "upi" in self.experiments or self.proper_upi:
+                dtype = dt_p.dtype
+                dt_p = nn.functional.softplus((dt_p + self.dt_bias).to(dtype=torch.float32)).to(dtype=dtype)
                 dt_bias = None
                 dt_softplus = False
 
+                if "upi" in self.experiments:
+                    if self.upi_dynamic:
+                        upi_mask = dynamic_scale_mask(self.upi_mask, self.seq_len, self.seq_len_scaled, self.seq_len_trained)
+                    else:
+                        upi_mask = self.upi_mask                    
+                    dt_p = dt_p / upi_mask
+                    
+                if self.proper_upi:
+                    # Dynamic upi scale is only possible with a cache of size O(seq_len)
+                    if abs(self.upi_interpolation_scale - 1) > 1e-6:
+                        dtype = hidden_states_p.dtype
+                        A = self.A * self.upi_interpolation_scale 
+                        hidden_states_scale = torch.expm1(A * dt_p) / torch.expm1(self.A * dt_p)
+                        hidden_states_p = hidden_states_p * hidden_states_scale.unsqueeze(-1)
+                        hidden_states_p = hidden_states_p.to(dtype=dtype)
+
             scan_output, varlen_state = mamba_chunk_scan_combined(
-                hidden_states_p.view(1, num_prefill_tokens,
-                                     self.num_heads // self.tp_size,
-                                     self.head_dim),
+                hidden_states_p,
                 dt_p,
-                self.A,
+                A,
                 B_p.view(1, num_prefill_tokens, self.n_groups // self.tp_size,
                          -1),
                 C_p.view(1, num_prefill_tokens, self.n_groups // self.tp_size,
@@ -620,18 +627,6 @@ class MambaMixer2(CustomOp):
                 -1, self.head_dim, self.ssm_state_size).to(dtype=torch.float32)
             dt_d = dt_d[:, :, None].expand(-1, -1, self.head_dim)
             dt_bias = self.dt_bias[:, None, ...].expand(-1, self.head_dim)
-            
-            dt_softplus = True
-            if "upi" in self.experiments.keys():
-                # Precompute scaled delta and disable later ones
-                if self.upi_dynamic:
-                    upi_mask = dynamic_scale_mask(self.upi_mask, self.seq_len, self.seq_len_scaled, self.seq_len_trained)
-                else:
-                    upi_mask = self.upi_mask
-                dt_d = nn.functional.softplus(dt_d + dt_bias) / upi_mask[:, None]
-                dt_bias = None
-                dt_softplus = False
-            
             D_d = self.D[:, None, ...].expand(-1, self.head_dim)
             B_d = B_d.view(-1, n_groups, B_d.shape[1] // n_groups)
             C_d = C_d.view(-1, n_groups, C_d.shape[1] // n_groups)
@@ -641,6 +636,31 @@ class MambaMixer2(CustomOp):
             # - the hidden is reshaped into (bs, num_heads, head_dim)
             # - mamba_cache_params.ssm_state's slots will be selected
             #   using state_indices_tensor_d
+            
+            # Apply scaling here
+            dt_softplus = True
+
+            if "upi" in self.experiments or self.proper_upi:
+                dtype = dt_d.dtype
+                dt_d = nn.functional.softplus((dt_d + dt_bias).to(dtype=torch.float32)).to(dtype=dtype)
+                dt_bias = None
+                dt_softplus = False
+
+                if "upi" in self.experiments:
+                    if self.upi_dynamic:
+                        upi_mask = dynamic_scale_mask(self.upi_mask, self.seq_len, self.seq_len_scaled, self.seq_len_trained)
+                    else:
+                        upi_mask = self.upi_mask                    
+                    dt_d = dt_d / upi_mask[:, None]
+                    
+                if self.proper_upi:
+                    # Dynamic upi scale is only possible with a cache of size O(seq_len)
+                    if abs(self.upi_interpolation_scale - 1) > 1e-6:
+                        dtype = hidden_states_d.dtype
+                        A_d = A_d * self.upi_interpolation_scale 
+                        hidden_states_scale = torch.expm1(self.upi_interpolation_scale * self.A.unsqueeze(-1) * dt_d) / torch.expm1(self.A.unsqueeze(-1) * dt_d)
+                        hidden_states_d = hidden_states_d * hidden_states_scale
+                        hidden_states_d = hidden_states_d.to(dtype=dtype)
 
             hidden_states_d = selective_state_update(
                 mamba_cache_params.ssm_state,
