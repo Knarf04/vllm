@@ -670,7 +670,7 @@ class MambaMixer2(CustomOp):
             # Apply scaling here
             dt_softplus = True
 
-            if "upi" in self.experiments or self.proper_upi:
+            if "upi" in self.experiments or self.proper_upi or self.adaptive_upi:
                 dtype = dt_d.dtype
                 dt_d = nn.functional.softplus((dt_d + dt_bias).to(dtype=torch.float32)).to(dtype=dtype)
                 dt_bias = None
