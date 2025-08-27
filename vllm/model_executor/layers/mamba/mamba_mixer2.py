@@ -436,6 +436,15 @@ class MambaMixer2(CustomOp):
         self.proper_upi = self.experiments.get("proper_upi", False)
         self.upi_interpolation_scale = self.seq_len_trained / self.seq_len_scaled
 
+        # For adaptive_upi, we utilize a token significance quantity to tell 
+        # how aggressive the scaling is needed
+        # 1) forget: 1-exp(-a*delta)
+        # 2) sigmoid: 1-exp(-delta)
+        # 3) input: delta*B
+        # 4) softplus: delta
+        self.adaptive_upi = self.experiments.get("adaptive_upi", False)
+        self.token_sig = self.experiments.get("token_sig", "softplus")
+
     def forward_native(
         self,
         hidden_states: torch.Tensor,
@@ -555,7 +564,7 @@ class MambaMixer2(CustomOp):
             dt_bias = self.dt_bias
             dt_softplus = True
 
-            if "upi" in self.experiments or self.proper_upi:
+            if "upi" in self.experiments or self.proper_upi or self.adaptive_upi:
                 dtype = dt_p.dtype
                 dt_p = nn.functional.softplus((dt_p + self.dt_bias).to(dtype=torch.float32)).to(dtype=dtype)
                 dt_bias = None
@@ -568,14 +577,35 @@ class MambaMixer2(CustomOp):
                         upi_mask = self.upi_mask                    
                     dt_p = dt_p / upi_mask
                     
-                if self.proper_upi:
+                elif self.proper_upi:
                     # Dynamic upi scale is only possible with a cache of size O(seq_len)
-                    if abs(self.upi_interpolation_scale - 1) > 1e-6:
-                        dtype = hidden_states_p.dtype
-                        A = self.A * self.upi_interpolation_scale 
-                        hidden_states_scale = torch.expm1(A * dt_p) / torch.expm1(self.A * dt_p)
-                        hidden_states_p = hidden_states_p * hidden_states_scale.unsqueeze(-1)
-                        hidden_states_p = hidden_states_p.to(dtype=dtype)
+                    dtype = hidden_states_p.dtype
+                    A = self.A * self.upi_interpolation_scale 
+                    hidden_states_scale = torch.expm1(A * dt_p) / torch.expm1(self.A * dt_p)
+                    hidden_states_p = hidden_states_p * hidden_states_scale.unsqueeze(-1)
+                    hidden_states_p = hidden_states_p.to(dtype=dtype)
+                
+                elif self.adaptive_upi:
+                    # Dynamic upi scale is only possible with a cache of size O(seq_len)
+                    token_sig = self.upi_interpolation_scale
+                    if self.token_sig == "forget":
+                        # 1) forget: 1-exp(-a*delta)
+                        token_sig = token_sig * (-torch.expm1(self.A * dt_p)) 
+                    elif self.token_sig == "sigmoid":
+                        # 2) sigmoid: 1-exp(-delta)
+                        token_sig = token_sig * (-torch.expm1(dt_p)) 
+                    elif self.token_sig == "input":
+                        # 3) input: delta*B
+                        B_p_norm = torch.linalg.norm(B_p.view(num_prefill_tokens, -1), dim=1, keepdim=True)
+                        token_sig = token_sig * dt_p * B_p_norm
+                    elif self.token_sig == "softplus":
+                        # 4) softplus: delta
+                        token_sig = token_sig * dt_p
+
+                    dtype = hidden_states_p.dtype
+                    hidden_states_scale = torch.expm1(token_sig * self.A * dt_p) / (token_sig * torch.expm1(self.A * dt_p))
+                    hidden_states_p = (hidden_states_p * hidden_states_scale.unsqueeze(-1)).to(dtype=dtype)
+                    dt_p = dt_p * token_sig
 
             scan_output, varlen_state = mamba_chunk_scan_combined(
                 hidden_states_p,
@@ -653,14 +683,34 @@ class MambaMixer2(CustomOp):
                         upi_mask = self.upi_mask                    
                     dt_d = dt_d / upi_mask[:, None]
                     
-                if self.proper_upi:
+                elif self.proper_upi:
                     # Dynamic upi scale is only possible with a cache of size O(seq_len)
-                    if abs(self.upi_interpolation_scale - 1) > 1e-6:
-                        dtype = hidden_states_d.dtype
-                        A_d = A_d * self.upi_interpolation_scale 
-                        hidden_states_scale = torch.expm1(self.upi_interpolation_scale * self.A.unsqueeze(-1) * dt_d) / torch.expm1(self.A.unsqueeze(-1) * dt_d)
-                        hidden_states_d = hidden_states_d * hidden_states_scale
-                        hidden_states_d = hidden_states_d.to(dtype=dtype)
+                    dtype = hidden_states_d.dtype
+                    A_d = A_d * self.upi_interpolation_scale 
+                    hidden_states_scale = torch.expm1(self.upi_interpolation_scale * self.A.unsqueeze(-1) * dt_d) / torch.expm1(self.A.unsqueeze(-1) * dt_d)
+                    hidden_states_d = (hidden_states_d * hidden_states_scale).to(dtype=dtype)
+
+                elif self.adaptive_upi:
+                    # Dynamic upi scale is only possible with a cache of size O(seq_len)
+                    token_sig = self.upi_interpolation_scale
+                    if self.token_sig == "forget":
+                        # 1) forget: 1-exp(-a*delta)
+                        token_sig = token_sig * (-torch.expm1(self.A.unsqueeze(-1) * dt_d)) 
+                    elif self.token_sig == "sigmoid":
+                        # 2) sigmoid: 1-exp(-delta)
+                        token_sig = token_sig * (-torch.expm1(dt_d)) 
+                    elif self.token_sig == "input":
+                        # 3) input: delta*B
+                        B_d_norm = torch.linalg.norm(B_d.view(B_d.shape[0], -1), dim=1, keepdim=True)
+                        token_sig = token_sig * dt_d * B_d_norm
+                    elif self.token_sig == "softplus":
+                        # 4) softplus: delta
+                        token_sig = token_sig * dt_d
+
+                    dtype = hidden_states_d.dtype
+                    hidden_states_scale = torch.expm1(token_sig * self.A.unsqueeze(-1) * dt_d) / (token_sig * torch.expm1(self.A.unsqueeze(-1) * dt_d))
+                    hidden_states_d = (hidden_states_d * hidden_states_scale).to(dtype=dtype)
+                    dt_d = dt_d * token_sig
 
             hidden_states_d = selective_state_update(
                 mamba_cache_params.ssm_state,
