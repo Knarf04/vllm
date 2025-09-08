@@ -702,7 +702,7 @@ class MambaMixer2(CustomOp):
                     elif self.token_sig == "input":
                         # 3) input: delta*B
                         B_d_norm = torch.linalg.norm(B_d.view(B_d.shape[0], -1), dim=1, keepdim=True)
-                        token_sig = token_sig * dt_d * B_d_norm
+                        token_sig = token_sig * dt_d * B_d_norm.unsqueeze(-1)
                     elif self.token_sig == "softplus":
                         # 4) softplus: delta
                         token_sig = token_sig * dt_d
