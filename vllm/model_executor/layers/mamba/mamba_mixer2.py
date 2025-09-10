@@ -31,6 +31,7 @@ from vllm.model_executor.utils import set_weight_attrs
 # Added by the IBM Team, 2024
 
 import os
+import math
 from vllm.analysis.upi import scale_dt, dynamic_scale_mask
 
 
@@ -597,10 +598,10 @@ class MambaMixer2(CustomOp):
                     elif self.token_sig == "input":
                         # 3) input: delta*B
                         B_p_norm = torch.linalg.norm(B_p.view(num_prefill_tokens, -1), dim=1, keepdim=True)
-                        token_sig = self.A * dt_p * B_p_norm / torch.log(self.scale_portion)
+                        token_sig = self.A * dt_p * B_p_norm / math.log(self.scale_portion)
                     elif self.token_sig == "softplus":
                         # 4) softplus: delta
-                        token_sig = self.A * dt_p / torch.log(self.scale_portion)
+                        token_sig = self.A * dt_p / math.log(self.scale_portion)
 
                     dtype = hidden_states_p.dtype
                     hidden_states_scale = torch.expm1(token_sig * self.A * dt_p) / (token_sig * torch.expm1(self.A * dt_p))
@@ -701,10 +702,10 @@ class MambaMixer2(CustomOp):
                     elif self.token_sig == "input":
                         # 3) input: delta*B
                         B_d_norm = torch.linalg.norm(B_d.view(B_d.shape[0], -1), dim=1, keepdim=True)
-                        token_sig = self.A.unsqueeze(-1) * dt_d * B_d_norm.unsqueeze(-1) / torch.log(self.scale_portion)
+                        token_sig = self.A.unsqueeze(-1) * dt_d * B_d_norm.unsqueeze(-1) / math.log(self.scale_portion)
                     elif self.token_sig == "softplus":
                         # 4) softplus: delta
-                        token_sig = self.A.unsqueeze(-1) * dt_d / torch.log(self.scale_portion)
+                        token_sig = self.A.unsqueeze(-1) * dt_d / math.log(self.scale_portion)
 
                     dtype = hidden_states_d.dtype
                     hidden_states_scale = torch.expm1(token_sig * self.A.unsqueeze(-1) * dt_d) / (token_sig * torch.expm1(self.A.unsqueeze(-1) * dt_d))
