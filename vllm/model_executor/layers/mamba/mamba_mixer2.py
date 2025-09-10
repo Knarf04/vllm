@@ -444,6 +444,7 @@ class MambaMixer2(CustomOp):
         # 4) softplus: delta
         self.adaptive_upi = self.experiments.get("adaptive_upi", False)
         self.token_sig = self.experiments.get("token_sig", "softplus")
+        self.scale_portion = self.experiments.get("scale_portion", 0.95)
 
     def forward_native(
         self,
@@ -587,20 +588,19 @@ class MambaMixer2(CustomOp):
                 
                 elif self.adaptive_upi:
                     # Dynamic upi scale is only possible with a cache of size O(seq_len)
-                    token_sig = self.upi_interpolation_scale
                     if self.token_sig == "forget":
                         # 1) forget: 1-exp(-a*delta)
-                        token_sig = token_sig * (-torch.expm1(self.A * dt_p)) 
+                        token_sig = (-torch.expm1(self.A * dt_p)) / (1-torch.pow(self.scale_portion, 1 / self.A))
                     elif self.token_sig == "sigmoid":
                         # 2) sigmoid: 1-exp(-delta)
-                        token_sig = token_sig * (-torch.expm1(dt_p)) 
+                        token_sig = (-torch.expm1(dt_p)) / (1-self.scale_portion)
                     elif self.token_sig == "input":
                         # 3) input: delta*B
                         B_p_norm = torch.linalg.norm(B_p.view(num_prefill_tokens, -1), dim=1, keepdim=True)
-                        token_sig = token_sig * dt_p * B_p_norm
+                        token_sig = self.A * dt_p * B_p_norm / torch.log(self.scale_portion)
                     elif self.token_sig == "softplus":
                         # 4) softplus: delta
-                        token_sig = token_sig * dt_p
+                        token_sig = self.A * dt_p / torch.log(self.scale_portion)
 
                     dtype = hidden_states_p.dtype
                     hidden_states_scale = torch.expm1(token_sig * self.A * dt_p) / (token_sig * torch.expm1(self.A * dt_p))
@@ -692,20 +692,19 @@ class MambaMixer2(CustomOp):
 
                 elif self.adaptive_upi:
                     # Dynamic upi scale is only possible with a cache of size O(seq_len)
-                    token_sig = self.upi_interpolation_scale
                     if self.token_sig == "forget":
                         # 1) forget: 1-exp(-a*delta)
-                        token_sig = token_sig * (-torch.expm1(self.A.unsqueeze(-1) * dt_d)) 
+                        token_sig = (-torch.expm1(self.A.unsqueeze(-1) * dt_d)) / (1-torch.pow(self.scale_portion, 1/self.A.unsqueeze(-1)))
                     elif self.token_sig == "sigmoid":
                         # 2) sigmoid: 1-exp(-delta)
-                        token_sig = token_sig * (-torch.expm1(dt_d)) 
+                        token_sig = (-torch.expm1(dt_d)) / (1-self.scale_portion)
                     elif self.token_sig == "input":
                         # 3) input: delta*B
                         B_d_norm = torch.linalg.norm(B_d.view(B_d.shape[0], -1), dim=1, keepdim=True)
-                        token_sig = token_sig * dt_d * B_d_norm.unsqueeze(-1)
+                        token_sig = self.A.unsqueeze(-1) * dt_d * B_d_norm.unsqueeze(-1) / torch.log(self.scale_portion)
                     elif self.token_sig == "softplus":
                         # 4) softplus: delta
-                        token_sig = token_sig * dt_d
+                        token_sig = self.A.unsqueeze(-1) * dt_d / torch.log(self.scale_portion)
 
                     dtype = hidden_states_d.dtype
                     hidden_states_scale = torch.expm1(token_sig * self.A.unsqueeze(-1) * dt_d) / (token_sig * torch.expm1(self.A.unsqueeze(-1) * dt_d))
