@@ -166,22 +166,27 @@ class BambaAttentionDecoderLayer(nn.Module):
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 
-        if hasattr(config, "partial_rotary_factor"):
-            rotary_dim = self.head_dim * config.partial_rotary_factor
-        elif hasattr(config, "attn_rotary_emb"):
-            rotary_dim = config.attn_rotary_emb  # for backward compatibility
-        else:
-            rotary_dim = self.head_dim  # default
+        rope_parameters = getattr(config, "rope_parameters", None)
+        rope_type = rope_parameters.get("rope_type", "default") if rope_parameters else "default"
+        self.use_rope = rope_type != "none"
 
-        self.rotary_emb = get_rope(
-            head_size=self.head_dim,
-            rotary_dim=rotary_dim,
-            max_position=max_position_embeddings,
-            rope_scaling=rope_scaling,
-            base=rope_theta,
-            is_neox_style=True,
-            dtype=torch.get_default_dtype(),  # see impl of get_rope
-        )
+        if self.use_rope:
+            if hasattr(config, "partial_rotary_factor"):
+                rotary_dim = self.head_dim * config.partial_rotary_factor
+            elif hasattr(config, "attn_rotary_emb"):
+                rotary_dim = config.attn_rotary_emb  # for backward compatibility
+            else:
+                rotary_dim = self.head_dim  # default
+
+            self.rotary_emb = get_rope(
+                head_size=self.head_dim,
+                rotary_dim=rotary_dim,
+                max_position=max_position_embeddings,
+                rope_scaling=rope_scaling,
+                base=rope_theta,
+                is_neox_style=True,
+                dtype=torch.get_default_dtype(),  # see impl of get_rope
+            )
 
         self.qkv_proj = QKVParallelLinear(
             config.hidden_size,
@@ -220,7 +225,8 @@ class BambaAttentionDecoderLayer(nn.Module):
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
-        q, k = self.rotary_emb(positions, q, k)
+        if self.use_rope:
+            q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
         return output
